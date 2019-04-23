@@ -1,5 +1,8 @@
 import requests
 import os
+
+from stem import Signal
+from stem.control import Controller
 from bs4 import BeautifulSoup
 
 """ Initiate Elasticsearch """
@@ -15,24 +18,32 @@ session.proxies['https'] = 'socks5h://localhost:9050'
 stored_list = []
 scanning_list = []
 
+"""FUNCTIONS TO CHANGE TOR IDENTITIES"""
 
-def get_onion_list():
-    # open the master list
+def renew_tor_ip():
+    with Controller.from_port(port=9051) as controller:
+        controller.authenticate(password="root")
+        controller.signal(Signal.NEWNYM)
+    print("Current IP address is %s" % get_current_ip())
 
-    if os.path.exists("mega_list.txt"):
 
-        with open("mega_list.txt", "rb") as fd:
+def get_current_ip():
+    session = requests.session()
 
-            s_onions = fd.read().splitlines()
+    # TO Request URL with SOCKS over TOR
+    session.proxies = {}
+    session.proxies['http'] = 'socks5h://localhost:9050'
+    session.proxies['https'] = 'socks5h://localhost:9050'
+
+    try:
+        r = session.get('http://httpbin.org/ip')
+    except Exception as e:
+        print(str(e))
     else:
-        print("[!!] No new onions from file.")
-        s_onions = []
-        return s_onions
+        return r.text
 
-    print("[*] Total new onions for scanning: %d" % len(s_onions))
 
-    return s_onions
-
+"""ALL ELASTICSEARCH OPERATION FUNCTIONS"""
 
 def retrieve_es():
     es_list = []
@@ -95,6 +106,40 @@ def update_es_link(url, title, status):
     print("[**]Link updated in ES: %s." % url)
 
 
+"""ALL ONION OPERATION FUNCTIONS"""
+
+
+def get_onion_list():
+    # open the master list
+
+    if os.path.exists("mega_list.txt"):
+
+        with open("mega_list.txt", "rb") as fd:
+
+            s_onions = fd.read().splitlines()
+    else:
+        print("[!!] No new onions from file.")
+        s_onions = []
+        return s_onions
+
+    print("[*] Total new onions for scanning: %d" % len(s_onions))
+
+    return s_onions
+
+
+def clean_onion(onion):
+    s_url = onion.split(".")
+    s_count = len(s_url)
+
+    if s_count > 2:
+        print("[!] Need to clean URL")
+        onion = s_url[s_count - 2] + "." + s_url[s_count - 1]
+        print("[*] URL after cleaning: %s" % onion)
+        return onion
+    else:
+        return onion
+
+
 def check_onion(onion):
     if onion in stored_list:
         return True
@@ -110,18 +155,21 @@ def extract_onions(soup):
     for tag in links:
         link = tag.get('href', None)
 
-        if link is not None and "onion" in link:
-            link = link.split('/')[2]
-
-            if link not in scanning_list:
-                scanning_list.append(link)
-                print("[**]Added new link to scan: %s. Total links to scan is %s" % (link, len(scanning_list)))
+        if link is not None:
+            if ".onion" in link and "=" not in link:
+                if "http://" in link or "https://" in link:
+                    link = link.split('/')[2]
+                    if link not in scanning_list:
+                        scanning_list.append(link)
+                        print("[**]Added new link to scan: %s. Total links to scan is %s" % (link, len(scanning_list)))
 
 
 def scan_onion(onion):
 
     global onion_list
     global session
+
+    onion = clean_onion(onion)
 
     try:
         if "http://" in onion or "https://" in onion:
@@ -143,35 +191,42 @@ def scan_onion(onion):
         soup = BeautifulSoup(response.content, features="lxml")
 
         if soup.find('title') is not None:
-            title = soup.find('title')
+            otitle = (soup.find('title')).getText()
         else:
-            title = "No Title"
+            otitle = "No Title"
 
-        print("[*]Scanning %s - %s" % (onion, title.getText()))
+        print("[*]Scanning %s - %s" % (onion, otitle))
 
         if not check_onion(onion):
-            add_to_es(onion, title.getText(), "online")
+            add_to_es(onion, otitle, "online")
             stored_list.append(onion)
         else:
-            update_es_link(onion, title.getText(), "online")
+            update_es_link(onion, otitle, "online")
 
         extract_onions(soup)
 
+
+
+"""MAIN OPERATIONS"""
 
 stored_list = retrieve_es()
 scanning_list = get_onion_list()
 
 scanning_list = scanning_list + stored_list
 
-
-
 if scanning_list != []:
 
     count = 0
+    circuit_count = 0
 
     while count < len(scanning_list):
         print("Scanning %s of %s - %s" % (count, len(scanning_list), scanning_list[count]))
         scan_onion(scanning_list[count])
         count += 1
+        circuit_count += 1
+
+        if circuit_count == 50:
+            renew_tor_ip()
+            circuit_count = 0
 else:
     print("Please provide list of onions in new_onion.txt")
