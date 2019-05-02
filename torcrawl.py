@@ -1,5 +1,6 @@
 import requests
 import os
+import threading
 
 from stem import Signal
 from stem.control import Controller
@@ -19,6 +20,7 @@ stored_list = []
 scanning_list = []
 
 """FUNCTIONS TO CHANGE TOR IDENTITIES"""
+
 
 def renew_tor_ip():
     with Controller.from_port(port=9051) as controller:
@@ -83,7 +85,7 @@ def add_to_es(url, title, status):
                 "status": status
                }
 
-    es.index(index='onions', doc_type='up', body=e1, ignore=400)
+    es.index(index='onions', doc_type='up', body=e1, ignore=(400,409))
     print("[**]Link added to ES: %s." % url)
 
 
@@ -102,7 +104,7 @@ def update_es_link(url, title, status):
                }
         }
     print("Updating ES link for %s with query %s" % (url, e1))
-    es.update_by_query(index='onions', doc_type='up', body=e1, ignore=(400, 500))
+    es.update_by_query(index='onions', doc_type='up', body=e1, ignore=(400, 500, 409))
     print("[**]Link updated in ES: %s." % url)
 
 
@@ -128,6 +130,11 @@ def get_onion_list():
 
 
 def clean_onion(onion):
+
+    if ".." in onion:
+        onion = onion.replace("..", ".")
+        
+
     s_url = onion.split(".")
     s_count = len(s_url)
 
@@ -206,27 +213,46 @@ def scan_onion(onion):
         extract_onions(soup)
 
 
-
 """MAIN OPERATIONS"""
 
 stored_list = retrieve_es()
 scanning_list = get_onion_list()
-
 scanning_list = scanning_list + stored_list
+
 
 if scanning_list != []:
 
     count = 0
+    t_count = 0
     circuit_count = 0
+    t_list = []
 
     while count < len(scanning_list):
         print("Scanning %s of %s - %s" % (count, len(scanning_list), scanning_list[count]))
-        scan_onion(scanning_list[count])
-        count += 1
-        circuit_count += 1
 
-        if circuit_count == 50:
+        for i in range(5):
+            if count < len(scanning_list):
+                t = threading.Thread(target=scan_onion, args=(scanning_list[count],))
+                count += 1
+                t_count += 1
+                t_list.append(t)
+                print("[*] Added Thread %s" % t_count)
+            else:
+                break
+
+        for t in t_list:
+            t.start()
+            print("[*] Thread Started!")
+
+        for t in t_list:
+            t.join()
+            circuit_count += 1
+
+        if circuit_count > 50:
             renew_tor_ip()
             circuit_count = 0
+
+        t_count = 0
+        t_list = []
 else:
     print("Please provide list of onions in new_onion.txt")
